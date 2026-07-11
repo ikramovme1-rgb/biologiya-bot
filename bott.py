@@ -34,7 +34,7 @@ YOUTUBE_LINK = os.getenv("YOUTUBE_LINK", "https://youtu.be/wLA_0xU8g3U")
 # Marafon kanali — bot shu kanalda ADMIN bo'lishi va
 # "Invite Users via Link" huquqiga ega bo'lishi SHART.
 # Format: -100xxxxxxxxxx (kanal ID) yoki @kanal_username
-MARATHON_CHANNEL_ID = os.getenv("MARATHON_CHANNEL_ID", "@your_marathon_channel")
+MARATHON_CHANNEL_ID = os.getenv("MARATHON_CHANNEL_ID", "https://t.me/+8exWHbwDxSNjZjcy")
 
 # Google Sheets sozlamalari
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "1uw8r56rBpmf_kxSPtKVu5UcRefuuuWS96Rx8dAIew2U")
