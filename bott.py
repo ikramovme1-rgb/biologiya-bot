@@ -26,7 +26,7 @@ from telegram.error import TelegramError
 BOT_TOKEN = os.getenv("BOT_TOKEN", "BOT_TOKENINGIZNI_SHU_YERGA_YOZING")
 
 # Admin Telegram ID — xatoliklar shu odamga yuboriladi (ixtiyoriy)
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_ID = int(os.getenv("ADMIN_ID", "1227596738"))
 
 # Milliy Sertifikat uchun YouTube link
 YOUTUBE_LINK = os.getenv("YOUTUBE_LINK", "https://youtu.be/wLA_0xU8g3U")
@@ -34,7 +34,7 @@ YOUTUBE_LINK = os.getenv("YOUTUBE_LINK", "https://youtu.be/wLA_0xU8g3U")
 # Marafon kanali — bot shu kanalda ADMIN bo'lishi va
 # "Invite Users via Link" huquqiga ega bo'lishi SHART.
 # Format: -100xxxxxxxxxx (kanal ID) yoki @kanal_username
-MARATHON_CHANNEL_ID = os.getenv("MARATHON_CHANNEL_ID", "https://t.me/+8exWHbwDxSNjZjcy")
+MARATHON_CHANNEL_ID = os.getenv("1004342493384", "https://t.me/+8exWHbwDxSNjZjcy")
 
 # Google Sheets sozlamalari
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "1uw8r56rBpmf_kxSPtKVu5UcRefuuuWS96Rx8dAIew2U")
