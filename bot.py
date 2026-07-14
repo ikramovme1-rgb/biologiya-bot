@@ -19,7 +19,6 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
 )
-from telegram.error import TelegramError
 
 # ═══════════════════════════════════════════════════════
 # ⚙️ SOZLAMALAR — BU YERGA O'Z MA'LUMOTLARINGIZNI YOZING
@@ -33,10 +32,8 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "1227596738"))
 # Milliy Sertifikat uchun YouTube link
 YOUTUBE_LINK = os.getenv("YOUTUBE_LINK", "https://youtu.be/wLA_0xU8g3U")
 
-# Marafon kanali — bot shu kanalda ADMIN bo'lishi va
-# "Invite Users via Link" huquqiga ega bo'lishi SHART.
-# Format: -100xxxxxxxxxx (kanal ID) yoki @kanal_username
-MARATHON_CHANNEL_ID = os.getenv("MARATHON_CHANNEL_ID", "-1004342493384")
+# Marafon kanaliga qo'shilish uchun doimiy (permanent) taklif havolasi
+MARATHON_CHANNEL_LINK = os.getenv("MARATHON_CHANNEL_LINK", "https://t.me/+8exWHbwDxSNjZjcy")
 
 # Google Sheets sozlamalari
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "1uw8r56rBpmf_kxSPtKVu5UcRefuuuWS96Rx8dAIew2U")
@@ -152,11 +149,6 @@ def get_main_menu_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 
-def get_phone_keyboard():
-    keyboard = [[KeyboardButton("📱 Raqamni yuborish", request_contact=True)]]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-
 def get_region_keyboard():
     keyboard = []
     for i in range(0, len(REGIONS), 2):
@@ -238,20 +230,6 @@ async def send_certificate_link(update: Update, context: ContextTypes.DEFAULT_TY
 # 🏆 MARAFON — RO'YXATDAN O'TISH
 # ═══════════════════════════════════════════════════════
 
-async def create_marathon_invite_link(context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Marafon kanaliga bir martalik invite link yaratishga urinib ko'radi"""
-    try:
-        invite = await context.bot.create_chat_invite_link(
-            chat_id=MARATHON_CHANNEL_ID,
-            member_limit=1,
-            name=f"marathon-{user_id}"
-        )
-        return invite.invite_link
-    except TelegramError:
-        logger.exception("Marafon kanaliga invite link yaratib bo'lmadi")
-        return None
-
-
 async def start_marathon_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     existing = get_registration(user_id)
@@ -260,19 +238,8 @@ async def start_marathon_registration(update: Update, context: ContextTypes.DEFA
         text = (
             "✅ <b>Siz allaqachon marafonga ro'yxatdan o'tgansiz!</b>\n\n"
             f"📅 Ro'yxatdan o'tgan sana: {existing.get('registered_at', '-')[:10]}\n\n"
+            f"🔗 Kanalga qo'shilish havolasi:\n{MARATHON_CHANNEL_LINK}"
         )
-
-        invite_link = existing.get("invite_link")
-        if not invite_link:
-            invite_link = await create_marathon_invite_link(context, user_id)
-            if invite_link:
-                existing["invite_link"] = invite_link
-                save_registration(user_id, existing)
-
-        if invite_link:
-            text += f"🔗 Kanalga qo'shilish havolangiz:\n{invite_link}"
-        else:
-            text += "⚠️ Kanal havolasini yaratib bo'lmadi. Admin bilan bog'laning."
         await update.message.reply_text(text, parse_mode="HTML")
         return
 
@@ -290,9 +257,8 @@ async def handle_marathon_name(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data["full_name"] = update.message.text.strip()
     context.user_data["action"] = "marathon_phone"
     await update.message.reply_text(
-        "📱 Telefon raqamingizni yuboring (tugmani bosing yoki qo'lda yozing, "
-        "masalan: +998901234567):",
-        reply_markup=get_phone_keyboard()
+        "📱 Hozir foydalanadigan telefon raqamingizni qo'lda kiriting "
+        "(masalan: +998901234567):"
     )
 
 
@@ -303,16 +269,6 @@ async def handle_marathon_phone(update: Update, context: ContextTypes.DEFAULT_TY
         "📍 Viloyat/tumaningizni tanlang:",
         reply_markup=get_region_keyboard()
     )
-
-
-async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("action") != "marathon_phone":
-        return
-    contact = update.message.contact
-    if contact.user_id != update.effective_user.id:
-        await update.message.reply_text("⚠️ Iltimos, faqat o'zingizning raqamingizni yuboring.")
-        return
-    await handle_marathon_phone(update, context, contact.phone_number)
 
 
 async def region_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -341,42 +297,19 @@ async def finish_marathon_registration(update: Update, context: ContextTypes.DEF
     row = [now[:19], str(user.id), user.username or "-", full_name, phone, region]
     sheet_ok = await append_registration_to_sheet(row)
 
-    invite_link = await create_marathon_invite_link(context, user.id)
-
     save_registration(user.id, {
         "full_name": full_name,
         "phone": phone,
         "region": region,
         "registered_at": now,
-        "invite_link": invite_link,
         "sheet_synced": sheet_ok,
     })
 
-    if invite_link:
-        text = (
-            "🎉 <b>Ro'yxatdan muvaffaqiyatli o'tdingiz!</b>\n\n"
-            "Quyidagi havola orqali marafon kanaliga qo'shiling "
-            "(havola faqat sizga tegishli, faqat 1 marta ishlaydi):\n\n"
-            f"🔗 {invite_link}"
-        )
-    else:
-        text = (
-            "✅ <b>Ma'lumotlaringiz qabul qilindi!</b>\n\n"
-            "⚠️ Kanal havolasini yaratishda texnik xatolik yuz berdi. "
-            "Tez orada admin siz bilan bog'lanadi."
-        )
-        if ADMIN_ID:
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=(
-                        f"⚠️ Invite link yaratilmadi.\n"
-                        f"User: {user.id} (@{user.username})\n"
-                        f"F.I.Sh: {full_name}, Tel: {phone}, Viloyat: {region}"
-                    )
-                )
-            except TelegramError:
-                pass
+    text = (
+        "🎉 <b>Ro'yxatdan muvaffaqiyatli o'tdingiz!</b>\n\n"
+        "Quyidagi havola orqali marafon kanaliga qo'shiling:\n\n"
+        f"🔗 {MARATHON_CHANNEL_LINK}"
+    )
 
     await context.bot.send_message(
         chat_id=user.id,
@@ -425,7 +358,6 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("export", export_registrations))
     app.add_handler(CallbackQueryHandler(region_callback, pattern="^region_"))
-    app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("🎓 Bot ishga tushdi!")
