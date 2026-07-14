@@ -163,15 +163,34 @@ def get_region_keyboard():
 # 🚀 ASOSIY KOMANDALAR
 # ═══════════════════════════════════════════════════════
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
+async def show_main_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     text = (
-        "🎓 <b>Assalomu alaykum!</b>\n\n"
+        "🎓 <b>Xush kelibsiz!</b>\n\n"
         "Kerakli bo'limni tanlang:\n\n"
         f"{BTN_CERTIFICATE} — Milliy Sertifikat bo'yicha video dars\n"
-        f"{BTN_MARATHON} — Marafonga ro'yxatdan o'tish"
+        f"{BTN_MARATHON} — Marafon kanaliga qo'shilish"
     )
-    await update.message.reply_text(text, parse_mode="HTML", reply_markup=get_main_menu_keyboard())
+    await context.bot.send_message(
+        chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=get_main_menu_keyboard()
+    )
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    user_id = update.effective_user.id
+
+    if get_registration(user_id):
+        await show_main_menu(context, user_id)
+        return
+
+    context.user_data["action"] = "reg_name"
+    await update.message.reply_text(
+        "🎓 <b>Assalomu alaykum!</b>\n\n"
+        "Botdan foydalanishdan oldin ma'lumotlaringizni to'ldiring.\n\n"
+        "Ism va familiyangizni to'liq kiriting:",
+        parse_mode="HTML",
+        reply_markup=ReplyKeyboardRemove()
+    )
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -227,44 +246,21 @@ async def send_certificate_link(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 # ═══════════════════════════════════════════════════════
-# 🏆 MARAFON — RO'YXATDAN O'TISH
+# 📝 RO'YXATDAN O'TISH (start bosilganda, tugmalardan oldin)
 # ═══════════════════════════════════════════════════════
 
-async def start_marathon_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    existing = get_registration(user_id)
-
-    if existing:
-        text = (
-            "✅ <b>Siz allaqachon marafonga ro'yxatdan o'tgansiz!</b>\n\n"
-            f"📅 Ro'yxatdan o'tgan sana: {existing.get('registered_at', '-')[:10]}\n\n"
-            f"🔗 Kanalga qo'shilish havolasi:\n{MARATHON_CHANNEL_LINK}"
-        )
-        await update.message.reply_text(text, parse_mode="HTML")
-        return
-
-    context.user_data.clear()
-    context.user_data["action"] = "marathon_name"
-    await update.message.reply_text(
-        "🏆 <b>1-2 Avgust Marafon — ro'yxatdan o'tish</b>\n\n"
-        "Ism va familiyangizni to'liq kiriting:",
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
-
-async def handle_marathon_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["full_name"] = update.message.text.strip()
-    context.user_data["action"] = "marathon_phone"
+    context.user_data["action"] = "reg_phone"
     await update.message.reply_text(
         "📱 Hozir foydalanadigan telefon raqamingizni qo'lda kiriting "
         "(masalan: +998901234567):"
     )
 
 
-async def handle_marathon_phone(update: Update, context: ContextTypes.DEFAULT_TYPE, phone: str):
+async def handle_reg_phone(update: Update, context: ContextTypes.DEFAULT_TYPE, phone: str):
     context.user_data["phone"] = phone.strip()
-    context.user_data["action"] = "marathon_region"
+    context.user_data["action"] = "reg_region"
     await update.message.reply_text(
         "📍 Viloyat/tumaningizni tanlang:",
         reply_markup=get_region_keyboard()
@@ -275,19 +271,19 @@ async def region_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    if context.user_data.get("action") != "marathon_region":
+    if context.user_data.get("action") != "reg_region":
         return
 
     index = int(query.data.split("_")[1])
     region = REGIONS[index]
     context.user_data["region"] = region
 
-    await query.message.edit_text(f"📍 Tanlandi: <b>{region}</b>\n\n⏳ Ro'yxatga olinmoqda...", parse_mode="HTML")
+    await query.message.edit_text(f"📍 Tanlandi: <b>{region}</b>\n\n⏳ Saqlanmoqda...", parse_mode="HTML")
 
-    await finish_marathon_registration(update, context)
+    await finish_registration(update, context)
 
 
-async def finish_marathon_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def finish_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     full_name = context.user_data.get("full_name", "-")
     phone = context.user_data.get("phone", "-")
@@ -305,19 +301,27 @@ async def finish_marathon_registration(update: Update, context: ContextTypes.DEF
         "sheet_synced": sheet_ok,
     })
 
-    text = (
-        "🎉 <b>Ro'yxatdan muvaffaqiyatli o'tdingiz!</b>\n\n"
-        "Quyidagi havola orqali marafon kanaliga qo'shiling:\n\n"
-        f"🔗 {MARATHON_CHANNEL_LINK}"
-    )
+    context.user_data.clear()
 
     await context.bot.send_message(
         chat_id=user.id,
-        text=text,
-        parse_mode="HTML",
-        reply_markup=get_main_menu_keyboard()
+        text="✅ <b>Ma'lumotlaringiz saqlandi!</b>",
+        parse_mode="HTML"
     )
-    context.user_data.clear()
+    await show_main_menu(context, user.id)
+
+
+# ═══════════════════════════════════════════════════════
+# 🏆 MARAFON
+# ═══════════════════════════════════════════════════════
+
+async def send_marathon_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🏆 <b>1-2 Avgust Marafon</b>\n\n"
+        "Quyidagi havola orqali marafon kanaliga qo'shiling:\n\n"
+        f"🔗 {MARATHON_CHANNEL_LINK}"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 # ═══════════════════════════════════════════════════════
@@ -332,16 +336,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_certificate_link(update, context)
         return
     elif text == BTN_MARATHON:
-        await start_marathon_registration(update, context)
+        context.user_data.clear()
+        await send_marathon_link(update, context)
         return
 
     action = context.user_data.get("action")
 
-    if action == "marathon_name":
-        await handle_marathon_name(update, context)
+    if action == "reg_name":
+        await handle_reg_name(update, context)
         return
-    elif action == "marathon_phone":
-        await handle_marathon_phone(update, context, text)
+    elif action == "reg_phone":
+        await handle_reg_phone(update, context, text)
         return
 
 
