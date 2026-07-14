@@ -4,6 +4,8 @@ Muallif: Makhmudjon Ikramov
 """
 
 import os
+import csv
+import io
 import json
 import asyncio
 import logging
@@ -184,6 +186,38 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
         "❌ Bekor qilindi.", reply_markup=get_main_menu_keyboard()
+    )
+
+
+async def export_registrations(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/export — marafon ro'yxatini CSV fayl qilib yuborish (faqat admin)"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    registrations = load_json(REGISTRATIONS_FILE, {})
+    if not registrations:
+        await update.message.reply_text("Hozircha marafonga ro'yxatdan o'tganlar yo'q.")
+        return
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Telegram ID", "F.I.Sh", "Telefon", "Viloyat/tuman", "Ro'yxatdan o'tgan sana"])
+    for user_id, record in registrations.items():
+        writer.writerow([
+            user_id,
+            record.get("full_name", ""),
+            record.get("phone", ""),
+            record.get("region", ""),
+            record.get("registered_at", "")[:19],
+        ])
+
+    file_bytes = io.BytesIO(buf.getvalue().encode("utf-8-sig"))
+    file_bytes.name = "marafon_royxati.csv"
+
+    await update.message.reply_document(
+        document=file_bytes,
+        filename="marafon_royxati.csv",
+        caption=f"📋 Jami ro'yxatdan o'tganlar: {len(registrations)} ta"
     )
 
 
@@ -389,6 +423,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CommandHandler("export", export_registrations))
     app.add_handler(CallbackQueryHandler(region_callback, pattern="^region_"))
     app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
