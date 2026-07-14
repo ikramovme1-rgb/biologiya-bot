@@ -19,6 +19,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
 )
+from telegram.error import TelegramError
 
 # ═══════════════════════════════════════════════════════
 # ⚙️ SOZLAMALAR — BU YERGA O'Z MA'LUMOTLARINGIZNI YOZING
@@ -31,6 +32,9 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "1227596738"))
 
 # Milliy Sertifikat uchun YouTube link
 YOUTUBE_LINK = os.getenv("YOUTUBE_LINK", "https://youtu.be/wLA_0xU8g3U")
+
+# Botdan foydalanishdan oldin obuna bo'lishi shart bo'lgan asosiy kanal
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@ikramov_biologiya")
 
 # Marafon kanaliga qo'shilish uchun doimiy (permanent) taklif havolasi
 MARATHON_CHANNEL_LINK = os.getenv("MARATHON_CHANNEL_LINK", "https://t.me/+8exWHbwDxSNjZjcy")
@@ -159,6 +163,29 @@ def get_region_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 
+def get_subscribe_keyboard():
+    keyboard = [
+        [InlineKeyboardButton(
+            "📢 Kanalga obuna bo'lish",
+            url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}"
+        )],
+        [InlineKeyboardButton("✅ Obunani tekshirish", callback_data="check_sub")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+# ═══════════════════════════════════════════════════════
+# ✅ KANAL OBUNA TEKSHIRISH
+# ═══════════════════════════════════════════════════════
+
+async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    try:
+        member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except TelegramError:
+        return False
+
+
 # ═══════════════════════════════════════════════════════
 # 🚀 ASOSIY KOMANDALAR
 # ═══════════════════════════════════════════════════════
@@ -175,22 +202,52 @@ async def show_main_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     )
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    user_id = update.effective_user.id
-
+async def proceed_after_subscription(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     if get_registration(user_id):
         await show_main_menu(context, user_id)
         return
 
     context.user_data["action"] = "reg_name"
-    await update.message.reply_text(
-        "🎓 <b>Assalomu alaykum!</b>\n\n"
-        "Botdan foydalanishdan oldin ma'lumotlaringizni to'ldiring.\n\n"
-        "Ism va familiyangizni to'liq kiriting:",
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=(
+            "🎓 <b>Rahmat, obuna tasdiqlandi!</b>\n\n"
+            "Botdan foydalanishdan oldin ma'lumotlaringizni to'ldiring.\n\n"
+            "Ism va familiyangizni to'liq kiriting:"
+        ),
         parse_mode="HTML",
         reply_markup=ReplyKeyboardRemove()
     )
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    user_id = update.effective_user.id
+
+    if not await check_subscription(user_id, context):
+        await update.message.reply_text(
+            "📢 <b>Botdan foydalanish uchun avval kanalimizga obuna bo'ling:</b>\n\n"
+            f"{CHANNEL_USERNAME}\n\n"
+            "✅ Obuna bo'lgach, pastdagi tugmani bosing:",
+            parse_mode="HTML",
+            reply_markup=get_subscribe_keyboard()
+        )
+        return
+
+    await proceed_after_subscription(context, user_id)
+
+
+async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if not await check_subscription(user_id, context):
+        await query.answer("❌ Siz hali obuna bo'lmagansiz!", show_alert=True)
+        return
+
+    await query.answer()
+    await query.message.delete()
+    await proceed_after_subscription(context, user_id)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -362,6 +419,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("export", export_registrations))
+    app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
     app.add_handler(CallbackQueryHandler(region_callback, pattern="^region_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
