@@ -19,7 +19,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes
 )
-from telegram.error import TelegramError
+from telegram.error import TelegramError, RetryAfter
 
 # ═══════════════════════════════════════════════════════
 # ⚙️ SOZLAMALAR — BU YERGA O'Z MA'LUMOTLARINGIZNI YOZING
@@ -271,6 +271,14 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/xabar — barcha foydalanuvchilarga xabar yuborishni boshlash (faqat admin)"""
     if update.effective_user.id != ADMIN_ID:
         return
+
+    if context.bot_data.get("broadcasting"):
+        await update.message.reply_text(
+            "⏳ Oldingi xabar hali yuborilmoqda. Iltimos, u tugaguncha kuting "
+            "(1000+ kishiga yuborish bir necha daqiqa vaqt oladi)."
+        )
+        return
+
     context.user_data.clear()
     context.user_data["action"] = "broadcast"
     await update.message.reply_text(
@@ -280,24 +288,45 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    context.bot_data["broadcasting"] = True
+
     users = load_json(USERS_FILE, {})
     registrations = load_json(REGISTRATIONS_FILE, {})
     target_ids = set(users.keys()) | set(registrations.keys())
 
+    await update.message.reply_text(
+        f"⏳ {len(target_ids)} kishiga yuborilmoqda, biroz kuting..."
+    )
+
     success = 0
     fail = 0
-    for uid in target_ids:
-        try:
-            await context.bot.copy_message(
-                chat_id=int(uid),
-                from_chat_id=update.effective_chat.id,
-                message_id=update.message.message_id
-            )
-            success += 1
-        except TelegramError:
-            fail += 1
+    try:
+        for uid in target_ids:
+            try:
+                await context.bot.copy_message(
+                    chat_id=int(uid),
+                    from_chat_id=update.effective_chat.id,
+                    message_id=update.message.message_id
+                )
+                success += 1
+            except RetryAfter as e:
+                await asyncio.sleep(e.retry_after)
+                try:
+                    await context.bot.copy_message(
+                        chat_id=int(uid),
+                        from_chat_id=update.effective_chat.id,
+                        message_id=update.message.message_id
+                    )
+                    success += 1
+                except TelegramError:
+                    fail += 1
+            except TelegramError:
+                fail += 1
+            await asyncio.sleep(0.05)
+    finally:
+        context.bot_data["broadcasting"] = False
 
-    context.user_data.clear()
     await update.message.reply_text(
         f"📢 <b>Xabar yuborildi!</b>\n\n"
         f"✅ Yuborildi: {success}\n"
@@ -336,6 +365,69 @@ async def export_registrations(update: Update, context: ContextTypes.DEFAULT_TYP
         filename="marafon_royxati.csv",
         caption=f"📋 Jami ro'yxatdan o'tganlar: {len(registrations)} ta"
     )
+
+
+async def import_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/import — avval eksport qilingan CSV faylni qayta yuklab, ro'yxatni tiklash (faqat admin)"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    context.user_data.clear()
+    context.user_data["action"] = "import"
+    await update.message.reply_text(
+        "📥 Avval /export orqali olingan marafon_royxati.csv faylni shu yerga yuboring:"
+    )
+
+
+async def handle_import_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    document = update.message.document
+    tg_file = await context.bot.get_file(document.file_id)
+    raw = await tg_file.download_as_bytearray()
+
+    try:
+        text = bytes(raw).decode("utf-8-sig")
+        reader = csv.DictReader(io.StringIO(text))
+
+        registrations = load_json(REGISTRATIONS_FILE, {})
+        users = load_json(USERS_FILE, {})
+        count = 0
+        for row in reader:
+            uid = (row.get("Telegram ID") or "").strip()
+            if not uid.isdigit():
+                continue
+            registrations[uid] = {
+                "full_name": row.get("F.I.Sh", ""),
+                "phone": row.get("Telefon", ""),
+                "region": row.get("Viloyat/tuman", ""),
+                "registered_at": row.get("Ro'yxatdan o'tgan sana", ""),
+                "sheet_synced": False,
+            }
+            users.setdefault(uid, {"username": None, "full_name": row.get("F.I.Sh", "")})
+            count += 1
+
+        save_json(REGISTRATIONS_FILE, registrations)
+        save_json(USERS_FILE, users)
+    except Exception:
+        logger.exception("CSV import xatoligi")
+        context.user_data.clear()
+        await update.message.reply_text("❌ Faylni o'qib bo'lmadi. To'g'ri CSV ekanligini tekshiring.")
+        return
+
+    context.user_data.clear()
+    await update.message.reply_text(
+        f"✅ <b>{count} ta yozuv import qilindi!</b>\n\n"
+        f"Jami ro'yxatda: {len(registrations)} ta",
+        parse_mode="HTML"
+    )
+
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/stats — botdagi jami obunachilar sonini ko'rsatish (faqat admin)"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    users = load_json(USERS_FILE, {})
+    registrations = load_json(REGISTRATIONS_FILE, {})
+    total = len(set(users.keys()) | set(registrations.keys()))
+    await update.message.reply_text(f"👥 Botdagi jami obunachilar: <b>{total}</b> ta", parse_mode="HTML")
 
 
 # ═══════════════════════════════════════════════════════
@@ -439,6 +531,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "broadcast" and update.effective_user.id == ADMIN_ID:
         await handle_broadcast_message(update, context)
         return
+    if action == "import" and update.effective_user.id == ADMIN_ID and update.message.document:
+        await handle_import_document(update, context)
+        return
 
     text = update.message.text
     if text is None:
@@ -473,6 +568,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("export", export_registrations))
+    app.add_handler(CommandHandler("import", import_start))
+    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("xabar", broadcast_start))
     app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
     app.add_handler(CallbackQueryHandler(region_callback, pattern="^region_"))
