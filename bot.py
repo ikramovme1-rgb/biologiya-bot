@@ -281,9 +281,12 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = load_json(USERS_FILE, {})
+    registrations = load_json(REGISTRATIONS_FILE, {})
+    target_ids = set(users.keys()) | set(registrations.keys())
+
     success = 0
     fail = 0
-    for uid in users:
+    for uid in target_ids:
         try:
             await context.bot.copy_message(
                 chat_id=int(uid),
