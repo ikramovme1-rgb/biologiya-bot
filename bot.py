@@ -50,6 +50,7 @@ GOOGLE_SHEET_WORKSHEET = os.getenv("GOOGLE_SHEET_WORKSHEET", "Marafon")
 
 DATA_DIR = "data"
 REGISTRATIONS_FILE = os.path.join(DATA_DIR, "marathon_registrations.json")
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
 
 REGIONS = [
     "Toshkent shahri", "Toshkent viloyati",
@@ -77,9 +78,10 @@ logger = logging.getLogger(__name__)
 
 def ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
-    if not os.path.exists(REGISTRATIONS_FILE):
-        with open(REGISTRATIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump({}, f, ensure_ascii=False, indent=2)
+    for filepath in (REGISTRATIONS_FILE, USERS_FILE):
+        if not os.path.exists(filepath):
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump({}, f, ensure_ascii=False, indent=2)
 
 
 def load_json(filepath, default):
@@ -104,6 +106,12 @@ def save_registration(user_id, record):
     registrations = load_json(REGISTRATIONS_FILE, {})
     registrations[str(user_id)] = record
     save_json(REGISTRATIONS_FILE, registrations)
+
+
+def save_user(user_id, username, full_name):
+    users = load_json(USERS_FILE, {})
+    users[str(user_id)] = {"username": username, "full_name": full_name}
+    save_json(USERS_FILE, users)
 
 
 # ═══════════════════════════════════════════════════════
@@ -222,7 +230,9 @@ async def proceed_after_subscription(context: ContextTypes.DEFAULT_TYPE, user_id
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id
+    save_user(user_id, user.username, user.full_name)
 
     if not await check_subscription(user_id, context):
         await update.message.reply_text(
@@ -254,6 +264,42 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
         "❌ Bekor qilindi.", reply_markup=get_main_menu_keyboard()
+    )
+
+
+async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/xabar — barcha foydalanuvchilarga xabar yuborishni boshlash (faqat admin)"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    context.user_data.clear()
+    context.user_data["action"] = "broadcast"
+    await update.message.reply_text(
+        "📢 Barcha foydalanuvchilarga yuboriladigan xabarni yozing "
+        "(matn, rasm, video — istalgani bo'lishi mumkin):"
+    )
+
+
+async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    users = load_json(USERS_FILE, {})
+    success = 0
+    fail = 0
+    for uid in users:
+        try:
+            await context.bot.copy_message(
+                chat_id=int(uid),
+                from_chat_id=update.effective_chat.id,
+                message_id=update.message.message_id
+            )
+            success += 1
+        except TelegramError:
+            fail += 1
+
+    context.user_data.clear()
+    await update.message.reply_text(
+        f"📢 <b>Xabar yuborildi!</b>\n\n"
+        f"✅ Yuborildi: {success}\n"
+        f"❌ Yetkazilmadi: {fail}",
+        parse_mode="HTML"
     )
 
 
@@ -386,7 +432,14 @@ async def send_marathon_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ═══════════════════════════════════════════════════════
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    action = context.user_data.get("action")
+    if action == "broadcast" and update.effective_user.id == ADMIN_ID:
+        await handle_broadcast_message(update, context)
+        return
+
     text = update.message.text
+    if text is None:
+        return
 
     if text == BTN_CERTIFICATE:
         context.user_data.clear()
@@ -396,8 +449,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await send_marathon_link(update, context)
         return
-
-    action = context.user_data.get("action")
 
     if action == "reg_name":
         await handle_reg_name(update, context)
@@ -419,9 +470,13 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("export", export_registrations))
+    app.add_handler(CommandHandler("xabar", broadcast_start))
     app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
     app.add_handler(CallbackQueryHandler(region_callback, pattern="^region_"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(
+        (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL) & ~filters.COMMAND,
+        handle_message
+    ))
 
     logger.info("🎓 Bot ishga tushdi!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
