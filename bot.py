@@ -1,5 +1,5 @@
 """
-🎓 Milliy Sertifikat / Marafon Bot
+🏆 Marafon Bot
 Muallif: Makhmudjon Ikramov
 """
 
@@ -9,11 +9,10 @@ import io
 import json
 import asyncio
 import logging
-from datetime import datetime
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
+    ReplyKeyboardMarkup, KeyboardButton
 )
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -30,19 +29,14 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "BOT_TOKENINGIZNI_SHU_YERGA_YOZING")
 # Admin Telegram ID — xatoliklar shu odamga yuboriladi (ixtiyoriy)
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1227596738"))
 
-# Milliy Sertifikat uchun YouTube link
-YOUTUBE_LINK = os.getenv("YOUTUBE_LINK", "https://youtu.be/wLA_0xU8g3U")
+# Admin bilan aloqa uchun Telegram username (@ belgisisiz)
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "qabul30")
 
 # Botdan foydalanishdan oldin obuna bo'lishi shart bo'lgan asosiy kanal
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@ikramov_biologiya")
 
 # Marafon kanaliga qo'shilish uchun doimiy (permanent) taklif havolasi
-MARATHON_CHANNEL_LINK = os.getenv("MARATHON_CHANNEL_LINK", "https://t.me/+8exWHbwDxSNjZjcy")
-
-# Google Sheets sozlamalari
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "1uw8r56rBpmf_kxSPtKVu5UcRefuuuWS96Rx8dAIew2U")
-GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
-GOOGLE_SHEET_WORKSHEET = os.getenv("GOOGLE_SHEET_WORKSHEET", "Marafon")
+MARATHON_CHANNEL_LINK = os.getenv("MARATHON_CHANNEL_LINK", "https://t.me/+9dU3dAgOrB9hZTky")
 
 # ═══════════════════════════════════════════════════════
 # 📂 MA'LUMOTLAR FAYLLARI
@@ -52,18 +46,9 @@ DATA_DIR = "data"
 REGISTRATIONS_FILE = os.path.join(DATA_DIR, "marathon_registrations.json")
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 
-REGIONS = [
-    "Toshkent shahri", "Toshkent viloyati",
-    "Andijon", "Farg'ona",
-    "Namangan", "Sirdaryo",
-    "Jizzax", "Samarqand",
-    "Buxoro", "Navoiy",
-    "Qashqadaryo", "Surxondaryo",
-    "Xorazm", "Qoraqalpog'iston",
-]
-
-BTN_CERTIFICATE = "🎓 Milliy Sertifikat"
-BTN_MARATHON = "🏆 1-2 Avgust Marafon"
+BTN_MARATHON = "🏆 Marafon kanaliga qo'shilish!"
+BTN_MOCK_TEST = "📝 Mock test | Rash tekshiruv"
+BTN_ADMIN = "💬 Admin bilan aloqa"
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -115,60 +100,15 @@ def save_user(user_id, username, full_name):
 
 
 # ═══════════════════════════════════════════════════════
-# 📊 GOOGLE SHEETS
-# ═══════════════════════════════════════════════════════
-
-def _append_to_sheet_sync(row):
-    """Google Sheet'ga bitta qator yozish (blocking, thread'da chaqiriladi)"""
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_file(GOOGLE_CREDENTIALS_FILE, scopes=scopes)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(GOOGLE_SHEET_ID)
-
-    try:
-        worksheet = sheet.worksheet(GOOGLE_SHEET_WORKSHEET)
-    except gspread.WorksheetNotFound:
-        worksheet = sheet.add_worksheet(title=GOOGLE_SHEET_WORKSHEET, rows=1000, cols=10)
-        worksheet.append_row(
-            ["Sana", "Telegram ID", "Username", "F.I.Sh", "Telefon", "Viloyat/tuman"]
-        )
-
-    worksheet.append_row(row)
-
-
-async def append_registration_to_sheet(row):
-    """append_row bloklovchi bo'lgani uchun alohida thread'da ishga tushiramiz"""
-    if not GOOGLE_SHEET_ID:
-        logger.warning("GOOGLE_SHEET_ID sozlanmagan — Sheet'ga yozilmadi.")
-        return False
-    try:
-        await asyncio.to_thread(_append_to_sheet_sync, row)
-        return True
-    except Exception:
-        logger.exception("Google Sheet'ga yozishda xatolik")
-        return False
-
-
-# ═══════════════════════════════════════════════════════
 # 🎨 KLAVIATURALAR
 # ═══════════════════════════════════════════════════════
 
 def get_main_menu_keyboard():
-    keyboard = [[KeyboardButton(BTN_CERTIFICATE), KeyboardButton(BTN_MARATHON)]]
+    keyboard = [
+        [KeyboardButton(BTN_MARATHON)],
+        [KeyboardButton(BTN_MOCK_TEST), KeyboardButton(BTN_ADMIN)],
+    ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-
-def get_region_keyboard():
-    keyboard = []
-    for i in range(0, len(REGIONS), 2):
-        row = [InlineKeyboardButton(REGIONS[i], callback_data=f"region_{i}")]
-        if i + 1 < len(REGIONS):
-            row.append(InlineKeyboardButton(REGIONS[i + 1], callback_data=f"region_{i + 1}"))
-        keyboard.append(row)
-    return InlineKeyboardMarkup(keyboard)
 
 
 def get_subscribe_keyboard():
@@ -199,32 +139,9 @@ async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
 # ═══════════════════════════════════════════════════════
 
 async def show_main_menu(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    text = (
-        "🎓 <b>Xush kelibsiz!</b>\n\n"
-        "Kerakli bo'limni tanlang:\n\n"
-        f"{BTN_CERTIFICATE} — Milliy Sertifikat bo'yicha video dars\n"
-        f"{BTN_MARATHON} — Marafon kanaliga qo'shilish"
-    )
+    text = "🎓 <b>Xush kelibsiz!</b>\n\nKerakli bo'limni tanlang:"
     await context.bot.send_message(
         chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=get_main_menu_keyboard()
-    )
-
-
-async def proceed_after_subscription(context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    if get_registration(user_id):
-        await show_main_menu(context, user_id)
-        return
-
-    context.user_data["action"] = "reg_name"
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=(
-            "🎓 <b>Rahmat, obuna tasdiqlandi!</b>\n\n"
-            "Botdan foydalanishdan oldin ma'lumotlaringizni to'ldiring.\n\n"
-            "Ism va familiyangizni to'liq kiriting:"
-        ),
-        parse_mode="HTML",
-        reply_markup=ReplyKeyboardRemove()
     )
 
 
@@ -244,7 +161,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await proceed_after_subscription(context, user_id)
+    await show_main_menu(context, user_id)
 
 
 async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -257,7 +174,7 @@ async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await query.answer()
     await query.message.delete()
-    await proceed_after_subscription(context, user_id)
+    await show_main_menu(context, user_id)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -431,95 +348,28 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ═══════════════════════════════════════════════════════
-# 🎓 MILLIY SERTIFIKAT
-# ═══════════════════════════════════════════════════════
-
-async def send_certificate_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "🎓 <b>Milliy Sertifikat</b>\n\n"
-        "Video darsni quyidagi havoladan tomosha qiling:\n"
-        f"▶️ {YOUTUBE_LINK}"
-    )
-    await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=False)
-
-
-# ═══════════════════════════════════════════════════════
-# 📝 RO'YXATDAN O'TISH (start bosilganda, tugmalardan oldin)
-# ═══════════════════════════════════════════════════════
-
-async def handle_reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["full_name"] = update.message.text.strip()
-    context.user_data["action"] = "reg_phone"
-    await update.message.reply_text(
-        "📱 Hozir foydalanadigan telefon raqamingizni qo'lda kiriting "
-        "(masalan: +998901234567):"
-    )
-
-
-async def handle_reg_phone(update: Update, context: ContextTypes.DEFAULT_TYPE, phone: str):
-    context.user_data["phone"] = phone.strip()
-    context.user_data["action"] = "reg_region"
-    await update.message.reply_text(
-        "📍 Viloyat/tumaningizni tanlang:",
-        reply_markup=get_region_keyboard()
-    )
-
-
-async def region_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if context.user_data.get("action") != "reg_region":
-        return
-
-    index = int(query.data.split("_")[1])
-    region = REGIONS[index]
-    context.user_data["region"] = region
-
-    await query.message.edit_text(f"📍 Tanlandi: <b>{region}</b>\n\n⏳ Saqlanmoqda...", parse_mode="HTML")
-
-    await finish_registration(update, context)
-
-
-async def finish_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    full_name = context.user_data.get("full_name", "-")
-    phone = context.user_data.get("phone", "-")
-    region = context.user_data.get("region", "-")
-    now = datetime.now().isoformat()
-
-    row = [now[:19], str(user.id), user.username or "-", full_name, phone, region]
-    sheet_ok = await append_registration_to_sheet(row)
-
-    save_registration(user.id, {
-        "full_name": full_name,
-        "phone": phone,
-        "region": region,
-        "registered_at": now,
-        "sheet_synced": sheet_ok,
-    })
-
-    context.user_data.clear()
-
-    await context.bot.send_message(
-        chat_id=user.id,
-        text="✅ <b>Ma'lumotlaringiz saqlandi!</b>",
-        parse_mode="HTML"
-    )
-    await show_main_menu(context, user.id)
-
-
-# ═══════════════════════════════════════════════════════
-# 🏆 MARAFON
+# 🏆 MENYU TUGMALARI
 # ═══════════════════════════════════════════════════════
 
 async def send_marathon_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "🏆 <b>1-2 Avgust Marafon</b>\n\n"
+        "🏆 <b>Marafon kanaliga qo'shilish!</b>\n\n"
         "Quyidagi havola orqali marafon kanaliga qo'shiling:\n\n"
         f"🔗 {MARATHON_CHANNEL_LINK}"
     )
     await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def send_mock_test_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔜 <b>Tez kunda ishga tushadi!</b>", parse_mode="HTML")
+
+
+async def send_admin_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "💬 <b>Admin bilan aloqa</b>\n\nSavol va takliflar uchun murojaat qiling:"
+    keyboard = [[InlineKeyboardButton("✍️ Yozish", url=f"https://t.me/{ADMIN_USERNAME}")]]
+    await update.message.reply_text(
+        text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 
 # ═══════════════════════════════════════════════════════
@@ -539,21 +389,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text is None:
         return
 
-    if text == BTN_CERTIFICATE:
-        context.user_data.clear()
-        await send_certificate_link(update, context)
-        return
-    elif text == BTN_MARATHON:
-        context.user_data.clear()
+    if text == BTN_MARATHON:
         await send_marathon_link(update, context)
-        return
-
-    if action == "reg_name":
-        await handle_reg_name(update, context)
-        return
-    elif action == "reg_phone":
-        await handle_reg_phone(update, context, text)
-        return
+    elif text == BTN_MOCK_TEST:
+        await send_mock_test_info(update, context)
+    elif text == BTN_ADMIN:
+        await send_admin_contact(update, context)
 
 
 # ═══════════════════════════════════════════════════════
@@ -572,7 +413,6 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("xabar", broadcast_start))
     app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
-    app.add_handler(CallbackQueryHandler(region_callback, pattern="^region_"))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL) & ~filters.COMMAND,
         handle_message
