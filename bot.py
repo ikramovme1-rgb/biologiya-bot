@@ -92,20 +92,41 @@ def save_user(user_id, username, full_name):
     save_json(USERS_FILE, users)
 
 
-def load_lessons():
-    return load_json(LESSONS_FILE, [])
-
-
-def load_courses():
-    return load_json(COURSES_FILE, [])
+def new_id():
+    return uuid.uuid4().hex[:8]
 
 
 def find_item(items, item_id):
     return next((i for i in items if i.get("id") == item_id), None)
 
 
-def new_id():
-    return uuid.uuid4().hex[:8]
+def load_books():
+    """
+    Bepul darsliklar: [{id, title, lessons: [{id, title, url}]}]
+
+    Eski versiyada darslar tekis ro'yxatda saqlangan edi — agar shunday
+    ma'lumot uchrasa, uni bitta darslik ichiga o'rab, yangi formatga
+    o'tkazamiz (shunda avval qo'shilgan darslar yo'qolmaydi).
+    """
+    raw = load_json(LESSONS_FILE, [])
+    if raw and "lessons" not in raw[0]:
+        raw = [{
+            "id": new_id(),
+            "title": "Darslar",
+            "added_at": datetime.now().isoformat(timespec="seconds"),
+            "lessons": raw,
+        }]
+        save_json(LESSONS_FILE, raw)
+        logger.info("Eski formatdagi %s ta dars yangi darslikka ko'chirildi", len(raw[0]["lessons"]))
+    return raw
+
+
+def count_lessons(books):
+    return sum(len(b.get("lessons", [])) for b in books)
+
+
+def load_courses():
+    return load_json(COURSES_FILE, [])
 
 
 # ═══════════════════════════════════════════════════════
@@ -197,21 +218,33 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 📚 BEPUL KURSLAR (o'quvchi uchun)
 # ═══════════════════════════════════════════════════════
 
-async def send_lesson(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lesson: dict):
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=(
-            f"📚 <b>{lesson['title']}</b>\n\n"
-            f"▶️ Darsni tomosha qiling:\n{lesson['url']}"
-        ),
-        parse_mode="HTML"
-    )
+def books_keyboard(books):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"📕 {b['title']}", callback_data=f"book:{b['id']}")]
+        for b in books
+    ])
+
+
+def topics_keyboard(book, show_back: bool):
+    rows = [[InlineKeyboardButton(f"📖 {l['title']}", callback_data=f"lesson:{book['id']}:{l['id']}")]
+            for l in book.get("lessons", [])]
+    if show_back:
+        rows.append([InlineKeyboardButton("⬅️ Darsliklarga qaytish", callback_data="books")])
+    return InlineKeyboardMarkup(rows)
+
+
+def topics_text(book):
+    lessons = book.get("lessons", [])
+    if not lessons:
+        return f"📕 <b>{book['title']}</b>\n\nBu darslikka hali mavzu qo'shilmagan."
+    return (f"📕 <b>{book['title']}</b>\n\n"
+            f"Jami {len(lessons)} ta mavzu. Kerakligini tanlang:")
 
 
 async def send_free_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lessons = load_lessons()
+    books = load_books()
 
-    if not lessons:
+    if not books:
         await update.message.reply_text(
             "📚 <b>Bepul kurslar</b>\n\n"
             "Hozircha darslar qo'shilmagan. Tez orada qo'shiladi! 🔜",
@@ -219,29 +252,70 @@ async def send_free_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if len(lessons) == 1:
-        await send_lesson(context, update.effective_chat.id, lessons[0])
+    # Darslik bitta bo'lsa — to'g'ridan-to'g'ri uning mavzularini ko'rsatamiz
+    if len(books) == 1:
+        await update.message.reply_text(
+            topics_text(books[0]), parse_mode="HTML",
+            reply_markup=topics_keyboard(books[0], show_back=False)
+        )
         return
 
-    keyboard = [[InlineKeyboardButton(f"📖 {l['title']}", callback_data=f"lesson:{l['id']}")]
-                for l in lessons]
     await update.message.reply_text(
-        f"📚 <b>Bepul kurslar</b>\n\nJami {len(lessons)} ta dars. Mavzuni tanlang:",
+        f"📚 <b>Bepul kurslar</b>\n\nJami {len(books)} ta darslik. Birini tanlang:",
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=books_keyboard(books)
+    )
+
+
+async def book_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Darslik tanlanganda — uning mavzular ro'yxatini shu xabarning o'zida ochamiz."""
+    query = update.callback_query
+    await query.answer()
+
+    books = load_books()
+    book = find_item(books, query.data.split(":", 1)[1])
+    if not book:
+        await query.answer("❌ Bu darslik o'chirilgan", show_alert=True)
+        return
+
+    await query.message.edit_text(
+        topics_text(book), parse_mode="HTML",
+        reply_markup=topics_keyboard(book, show_back=len(books) > 1)
+    )
+
+
+async def books_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """⬅️ Darsliklar ro'yxatiga qaytish."""
+    query = update.callback_query
+    await query.answer()
+
+    books = load_books()
+    await query.message.edit_text(
+        f"📚 <b>Bepul kurslar</b>\n\nJami {len(books)} ta darslik. Birini tanlang:",
+        parse_mode="HTML",
+        reply_markup=books_keyboard(books)
     )
 
 
 async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mavzu tanlanganda — YouTube havolasini alohida xabar qilib yuboramiz."""
     query = update.callback_query
     await query.answer()
 
-    lesson = find_item(load_lessons(), query.data.split(":", 1)[1])
+    _, book_id, lesson_id = query.data.split(":", 2)
+    book = find_item(load_books(), book_id)
+    lesson = find_item(book.get("lessons", []), lesson_id) if book else None
+
     if not lesson:
         await query.answer("❌ Bu dars o'chirilgan", show_alert=True)
         return
 
-    await send_lesson(context, query.from_user.id, lesson)
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=(f"📖 <b>{lesson['title']}</b>\n\n"
+              f"▶️ Darsni tomosha qiling:\n{lesson['url']}"),
+        parse_mode="HTML"
+    )
 
 
 # ═══════════════════════════════════════════════════════
@@ -329,7 +403,8 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🔧 <b>Admin buyruqlari</b>\n\n"
         "📚 <b>Bepul kurslar</b>\n"
-        "/dars_qoshish — yangi mavzu + YouTube link qo'shish\n\n"
+        "/darslik_qoshish — yangi darslik (bo'lim) yaratish\n"
+        "/dars_qoshish — darslik ichiga mavzu + YouTube link qo'shish\n\n"
         "💎 <b>Pullik kurslar</b>\n"
         "/kurs_qoshish — yangi kurs (matn yoki rasm) qo'shish\n\n"
         "📋 <b>Boshqarish</b>\n"
@@ -344,14 +419,83 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def add_lesson_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/dars_qoshish — bepul dars qo'shishni boshlaydi"""
+async def add_book_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/darslik_qoshish — yangi darslik (bo'lim) yaratadi"""
     if update.effective_user.id != ADMIN_ID:
         return
     context.user_data.clear()
-    context.user_data["action"] = "lesson_title"
+    context.user_data["action"] = "book_title"
     await update.message.reply_text(
-        "📚 <b>Yangi bepul dars</b>\n\nMavzu nomini yozing:\n"
+        "📕 <b>Yangi darslik</b>\n\nDarslik nomini yozing "
+        "(masalan: 10-sinf darsligi):\n<i>(bekor qilish uchun /cancel)</i>",
+        parse_mode="HTML"
+    )
+
+
+async def handle_book_title(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    books = load_books()
+    books.append({
+        "id": new_id(),
+        "title": text.strip()[:200],
+        "added_at": datetime.now().isoformat(timespec="seconds"),
+        "lessons": [],
+    })
+    save_json(LESSONS_FILE, books)
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        f"✅ <b>Darslik yaratildi!</b>\n\n"
+        f"📕 {books[-1]['title']}\n\n"
+        f"Endi unga mavzu qo'shish uchun /dars_qoshish buyrug'ini yuboring.",
+        parse_mode="HTML",
+        reply_markup=get_main_menu_keyboard()
+    )
+
+
+async def add_lesson_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/dars_qoshish — mavzu qo'shishni boshlaydi (avval darslik tanlanadi)"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    books = load_books()
+    if not books:
+        await update.message.reply_text(
+            "📕 Avval darslik yarating: /darslik_qoshish\n\n"
+            "Mavzular darsliklar ichida saqlanadi."
+        )
+        return
+
+    context.user_data.clear()
+    keyboard = [[InlineKeyboardButton(f"📕 {b['title']}", callback_data=f"pickbook:{b['id']}")]
+                for b in books]
+    await update.message.reply_text(
+        "📚 <b>Yangi mavzu</b>\n\nQaysi darslikka qo'shilsin?",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def pick_book_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin mavzu qo'shish uchun darslikni tanladi."""
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("⛔ Sizda ruxsat yo'q", show_alert=True)
+        return
+    await query.answer()
+
+    book_id = query.data.split(":", 1)[1]
+    book = find_item(load_books(), book_id)
+    if not book:
+        await query.message.edit_text("❌ Bu darslik o'chirilgan.")
+        return
+
+    context.user_data.clear()
+    context.user_data["book_id"] = book_id
+    context.user_data["action"] = "lesson_title"
+
+    await query.message.edit_text(
+        f"📕 <b>{book['title']}</b>\n\nMavzu nomini yozing:\n"
         "<i>(bekor qilish uchun /cancel)</i>",
         parse_mode="HTML"
     )
@@ -372,20 +516,27 @@ async def handle_lesson_url(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
         return
 
-    lessons = load_lessons()
-    lessons.append({
+    books = load_books()
+    book = find_item(books, context.user_data.get("book_id"))
+    if not book:
+        context.user_data.clear()
+        await update.message.reply_text("❌ Darslik topilmadi (o'chirilgan bo'lishi mumkin).")
+        return
+
+    book.setdefault("lessons", []).append({
         "id": new_id(),
         "title": context.user_data["lesson_title"],
         "url": url,
         "added_at": datetime.now().isoformat(timespec="seconds"),
     })
-    save_json(LESSONS_FILE, lessons)
+    save_json(LESSONS_FILE, books)
     context.user_data.clear()
 
     await update.message.reply_text(
-        f"✅ <b>Dars qo'shildi!</b>\n\n"
-        f"📖 {lessons[-1]['title']}\n"
-        f"Jami bepul darslar: {len(lessons)} ta",
+        f"✅ <b>Mavzu qo'shildi!</b>\n\n"
+        f"📕 {book['title']}\n"
+        f"📖 {book['lessons'][-1]['title']}\n\n"
+        f"Shu darslikda jami {len(book['lessons'])} ta mavzu.",
         parse_mode="HTML",
         reply_markup=get_main_menu_keyboard()
     )
@@ -445,25 +596,44 @@ async def handle_course_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
+def manage_book_markup(book):
+    """Bitta darslik ichidagi mavzular + darslikni butunlay o'chirish tugmasi."""
+    rows = [[InlineKeyboardButton(f"❌ {l['title']}",
+                                  callback_data=f"dellesson:{book['id']}:{l['id']}")]
+            for l in book.get("lessons", [])]
+    rows.append([InlineKeyboardButton("🗑 Darslikni butunlay o'chirish",
+                                      callback_data=f"delbook:{book['id']}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def manage_book_text(book):
+    lessons = book.get("lessons", [])
+    if not lessons:
+        return f"📕 <b>{book['title']}</b>\n\nMavzu yo'q."
+    return (f"📕 <b>{book['title']}</b> — {len(lessons)} ta mavzu\n\n"
+            "Mavzuni o'chirish uchun ustiga bosing:")
+
+
 async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/royxat — qo'shilgan darslar va kurslarni o'chirish tugmalari bilan ko'rsatadi"""
+    """/royxat — darsliklar va kurslarni boshqarish"""
     if update.effective_user.id != ADMIN_ID:
         return
 
-    lessons = load_lessons()
+    books = load_books()
     courses = load_courses()
 
-    if lessons:
-        keyboard = [[InlineKeyboardButton(f"❌ {l['title']}", callback_data=f"dellesson:{l['id']}")]
-                    for l in lessons]
+    if books:
+        keyboard = [[InlineKeyboardButton(
+            f"📕 {b['title']} ({len(b.get('lessons', []))} ta mavzu)",
+            callback_data=f"mgbook:{b['id']}")] for b in books]
         await update.message.reply_text(
-            f"📚 <b>Bepul darslar ({len(lessons)} ta)</b>\n\n"
-            "O'chirish uchun ustiga bosing:",
+            f"📚 <b>Darsliklar ({len(books)} ta)</b>\n\n"
+            "Ichidagi mavzularni ko'rish yoki o'chirish uchun darslikni tanlang:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
     else:
-        await update.message.reply_text("📚 Bepul darslar hali qo'shilmagan.")
+        await update.message.reply_text("📚 Darsliklar hali yaratilmagan. /darslik_qoshish")
 
     if courses:
         keyboard = [[InlineKeyboardButton(f"❌ {c['title']}", callback_data=f"delcourse:{c['id']}")]
@@ -478,35 +648,80 @@ async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("💎 Pullik kurslar hali qo'shilmagan.")
 
 
+async def manage_book_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin darslikni boshqarish uchun tanladi."""
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("⛔ Sizda ruxsat yo'q", show_alert=True)
+        return
+    await query.answer()
+
+    book = find_item(load_books(), query.data.split(":", 1)[1])
+    if not book:
+        await query.message.edit_text("❌ Bu darslik allaqachon o'chirilgan.")
+        return
+
+    await query.message.edit_text(manage_book_text(book), parse_mode="HTML",
+                                  reply_markup=manage_book_markup(book))
+
+
 async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Dars yoki kursni o'chirish (faqat admin)"""
+    """Mavzu, darslik yoki pullik kursni o'chirish (faqat admin)"""
     query = update.callback_query
 
     if query.from_user.id != ADMIN_ID:
         await query.answer("⛔ Sizda ruxsat yo'q", show_alert=True)
         return
 
-    kind, item_id = query.data.split(":", 1)
-    filepath = LESSONS_FILE if kind == "dellesson" else COURSES_FILE
-    items = load_json(filepath, [])
+    parts = query.data.split(":")
+    kind = parts[0]
 
-    item = find_item(items, item_id)
-    if not item:
+    if kind == "delcourse":
+        courses = load_courses()
+        course = find_item(courses, parts[1])
+        if not course:
+            await query.answer("Allaqachon o'chirilgan", show_alert=True)
+            return
+        save_json(COURSES_FILE, [c for c in courses if c["id"] != parts[1]])
+        await query.answer(f"O'chirildi: {course['title']}")
+
+        remaining = [row for row in query.message.reply_markup.inline_keyboard
+                     if not row[0].callback_data.endswith(parts[1])]
+        if remaining:
+            await query.message.edit_reply_markup(InlineKeyboardMarkup(remaining))
+        else:
+            await query.message.edit_text("✅ Barcha pullik kurslar o'chirildi.")
+        return
+
+    books = load_books()
+    book = find_item(books, parts[1])
+    if not book:
+        await query.answer("Bu darslik allaqachon o'chirilgan", show_alert=True)
+        return
+
+    if kind == "delbook":
+        save_json(LESSONS_FILE, [b for b in books if b["id"] != parts[1]])
+        await query.answer(f"O'chirildi: {book['title']}")
+        await query.message.edit_text(
+            f"🗑 <b>{book['title']}</b> darsligi va uning "
+            f"{len(book.get('lessons', []))} ta mavzusi o'chirildi.",
+            parse_mode="HTML"
+        )
+        return
+
+    # kind == "dellesson"
+    lesson = find_item(book.get("lessons", []), parts[2])
+    if not lesson:
         await query.answer("Allaqachon o'chirilgan", show_alert=True)
         return
 
-    items = [i for i in items if i.get("id") != item_id]
-    save_json(filepath, items)
+    book["lessons"] = [l for l in book["lessons"] if l["id"] != parts[2]]
+    save_json(LESSONS_FILE, books)
 
-    await query.answer(f"O'chirildi: {item['title']}")
-
-    # O'chirilgan qatorni tugmalar orasidan olib tashlaymiz
-    remaining = [row for row in query.message.reply_markup.inline_keyboard
-                 if not row[0].callback_data.endswith(item_id)]
-    if remaining:
-        await query.message.edit_reply_markup(InlineKeyboardMarkup(remaining))
-    else:
-        await query.message.edit_text("✅ Hammasi o'chirildi.")
+    await query.answer(f"O'chirildi: {lesson['title']}")
+    await query.message.edit_text(manage_book_text(book), parse_mode="HTML",
+                                  reply_markup=manage_book_markup(book))
 
 
 # ═══════════════════════════════════════════════════════
@@ -672,9 +887,11 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = load_json(USERS_FILE, {})
     registrations = load_json(REGISTRATIONS_FILE, {})
     total = len(set(users.keys()) | set(registrations.keys()))
+    books = load_books()
     await update.message.reply_text(
         f"👥 Botdagi jami obunachilar: <b>{total}</b> ta\n"
-        f"📚 Bepul darslar: <b>{len(load_lessons())}</b> ta\n"
+        f"📕 Darsliklar: <b>{len(books)}</b> ta\n"
+        f"📖 Bepul mavzular: <b>{count_lessons(books)}</b> ta\n"
         f"💎 Pullik kurslar: <b>{len(load_courses())}</b> ta",
         parse_mode="HTML"
     )
@@ -716,7 +933,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if is_admin:
-        if action == "lesson_title":
+        if action == "book_title":
+            await handle_book_title(update, context, text)
+        elif action == "lesson_title":
             await handle_lesson_title(update, context, text)
         elif action == "lesson_url":
             await handle_lesson_url(update, context, text)
@@ -736,6 +955,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CommandHandler("admin", admin_help))
+    app.add_handler(CommandHandler("darslik_qoshish", add_book_start))
     app.add_handler(CommandHandler("dars_qoshish", add_lesson_start))
     app.add_handler(CommandHandler("kurs_qoshish", add_course_start))
     app.add_handler(CommandHandler("royxat", admin_list))
@@ -745,9 +965,14 @@ def main():
     app.add_handler(CommandHandler("xabar", broadcast_start))
 
     app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
+    app.add_handler(CallbackQueryHandler(book_callback, pattern="^book:"))
+    app.add_handler(CallbackQueryHandler(books_back_callback, pattern="^books$"))
     app.add_handler(CallbackQueryHandler(lesson_callback, pattern="^lesson:"))
     app.add_handler(CallbackQueryHandler(course_callback, pattern="^course:"))
-    app.add_handler(CallbackQueryHandler(delete_callback, pattern="^(dellesson|delcourse):"))
+    app.add_handler(CallbackQueryHandler(pick_book_callback, pattern="^pickbook:"))
+    app.add_handler(CallbackQueryHandler(manage_book_callback, pattern="^mgbook:"))
+    app.add_handler(CallbackQueryHandler(delete_callback,
+                                         pattern="^(dellesson|delbook|delcourse):"))
 
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL) & ~filters.COMMAND,
