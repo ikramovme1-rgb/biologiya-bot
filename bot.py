@@ -1,5 +1,5 @@
 """
-🏆 Marafon Bot
+🎓 Biologiya Bot — Bepul va Pullik kurslar
 Muallif: Makhmudjon Ikramov
 """
 
@@ -7,8 +7,10 @@ import os
 import csv
 import io
 import json
+import uuid
 import asyncio
 import logging
+from datetime import datetime
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -26,7 +28,7 @@ from telegram.error import TelegramError, RetryAfter
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "BOT_TOKENINGIZNI_SHU_YERGA_YOZING")
 
-# Admin Telegram ID — xatoliklar shu odamga yuboriladi (ixtiyoriy)
+# Admin Telegram ID — faqat shu odam kurs qo'sha oladi
 ADMIN_ID = int(os.getenv("ADMIN_ID", "1227596738"))
 
 # Admin bilan aloqa uchun Telegram username (@ belgisisiz)
@@ -35,9 +37,6 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "qabul30")
 # Botdan foydalanishdan oldin obuna bo'lishi shart bo'lgan asosiy kanal
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@ikramov_biologiya")
 
-# Marafon kanaliga qo'shilish uchun doimiy (permanent) taklif havolasi
-MARATHON_CHANNEL_LINK = os.getenv("MARATHON_CHANNEL_LINK", "https://t.me/+9dU3dAgOrB9hZTky")
-
 # ═══════════════════════════════════════════════════════
 # 📂 MA'LUMOTLAR FAYLLARI
 # ═══════════════════════════════════════════════════════
@@ -45,9 +44,11 @@ MARATHON_CHANNEL_LINK = os.getenv("MARATHON_CHANNEL_LINK", "https://t.me/+9dU3dA
 DATA_DIR = "data"
 REGISTRATIONS_FILE = os.path.join(DATA_DIR, "marathon_registrations.json")
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
+LESSONS_FILE = os.path.join(DATA_DIR, "free_lessons.json")     # bepul kurslar (mavzu + YouTube)
+COURSES_FILE = os.path.join(DATA_DIR, "paid_courses.json")     # pullik kurslar (matn/rasm)
 
-BTN_MARATHON = "🏆 Marafon kanaliga qo'shilish!"
-BTN_MOCK_TEST = "📝 Mock test | Rash tekshiruv"
+BTN_FREE = "📚 Bepul kurslar"
+BTN_PAID = "💎 Pullik kurslar"
 BTN_ADMIN = "💬 Admin bilan aloqa"
 
 logging.basicConfig(
@@ -63,10 +64,13 @@ logger = logging.getLogger(__name__)
 
 def ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
-    for filepath in (REGISTRATIONS_FILE, USERS_FILE):
+    for filepath, default in (
+        (REGISTRATIONS_FILE, {}), (USERS_FILE, {}),
+        (LESSONS_FILE, []), (COURSES_FILE, []),
+    ):
         if not os.path.exists(filepath):
             with open(filepath, "w", encoding="utf-8") as f:
-                json.dump({}, f, ensure_ascii=False, indent=2)
+                json.dump(default, f, ensure_ascii=False, indent=2)
 
 
 def load_json(filepath, default):
@@ -82,21 +86,26 @@ def save_json(filepath, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def get_registration(user_id):
-    registrations = load_json(REGISTRATIONS_FILE, {})
-    return registrations.get(str(user_id))
-
-
-def save_registration(user_id, record):
-    registrations = load_json(REGISTRATIONS_FILE, {})
-    registrations[str(user_id)] = record
-    save_json(REGISTRATIONS_FILE, registrations)
-
-
 def save_user(user_id, username, full_name):
     users = load_json(USERS_FILE, {})
     users[str(user_id)] = {"username": username, "full_name": full_name}
     save_json(USERS_FILE, users)
+
+
+def load_lessons():
+    return load_json(LESSONS_FILE, [])
+
+
+def load_courses():
+    return load_json(COURSES_FILE, [])
+
+
+def find_item(items, item_id):
+    return next((i for i in items if i.get("id") == item_id), None)
+
+
+def new_id():
+    return uuid.uuid4().hex[:8]
 
 
 # ═══════════════════════════════════════════════════════
@@ -105,8 +114,8 @@ def save_user(user_id, username, full_name):
 
 def get_main_menu_keyboard():
     keyboard = [
-        [KeyboardButton(BTN_MARATHON)],
-        [KeyboardButton(BTN_MOCK_TEST), KeyboardButton(BTN_ADMIN)],
+        [KeyboardButton(BTN_FREE), KeyboardButton(BTN_PAID)],
+        [KeyboardButton(BTN_ADMIN)],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -184,6 +193,326 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ═══════════════════════════════════════════════════════
+# 📚 BEPUL KURSLAR (o'quvchi uchun)
+# ═══════════════════════════════════════════════════════
+
+async def send_lesson(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lesson: dict):
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            f"📚 <b>{lesson['title']}</b>\n\n"
+            f"▶️ Darsni tomosha qiling:\n{lesson['url']}"
+        ),
+        parse_mode="HTML"
+    )
+
+
+async def send_free_lessons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lessons = load_lessons()
+
+    if not lessons:
+        await update.message.reply_text(
+            "📚 <b>Bepul kurslar</b>\n\n"
+            "Hozircha darslar qo'shilmagan. Tez orada qo'shiladi! 🔜",
+            parse_mode="HTML"
+        )
+        return
+
+    if len(lessons) == 1:
+        await send_lesson(context, update.effective_chat.id, lessons[0])
+        return
+
+    keyboard = [[InlineKeyboardButton(f"📖 {l['title']}", callback_data=f"lesson:{l['id']}")]
+                for l in lessons]
+    await update.message.reply_text(
+        f"📚 <b>Bepul kurslar</b>\n\nJami {len(lessons)} ta dars. Mavzuni tanlang:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    lesson = find_item(load_lessons(), query.data.split(":", 1)[1])
+    if not lesson:
+        await query.answer("❌ Bu dars o'chirilgan", show_alert=True)
+        return
+
+    await send_lesson(context, query.from_user.id, lesson)
+
+
+# ═══════════════════════════════════════════════════════
+# 💎 PULLIK KURSLAR (o'quvchi uchun)
+# ═══════════════════════════════════════════════════════
+
+async def send_course(context: ContextTypes.DEFAULT_TYPE, chat_id: int, course: dict):
+    caption = f"💎 <b>{course['title']}</b>"
+    if course.get("text"):
+        caption += f"\n\n{course['text']}"
+
+    if course.get("photo"):
+        # Telegram rasm izohi 1024 belgidan oshmasligi kerak — uzun bo'lsa ajratamiz
+        if len(caption) <= 1024:
+            await context.bot.send_photo(chat_id=chat_id, photo=course["photo"],
+                                         caption=caption, parse_mode="HTML")
+        else:
+            await context.bot.send_photo(chat_id=chat_id, photo=course["photo"],
+                                         caption=f"💎 <b>{course['title']}</b>", parse_mode="HTML")
+            await context.bot.send_message(chat_id=chat_id, text=course["text"], parse_mode="HTML")
+    else:
+        await context.bot.send_message(chat_id=chat_id, text=caption, parse_mode="HTML")
+
+    keyboard = [[InlineKeyboardButton("✍️ Admin bilan bog'lanish",
+                                      url=f"https://t.me/{ADMIN_USERNAME}")]]
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="Kursga yozilish yoki savollar uchun:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def send_paid_courses(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    courses = load_courses()
+
+    if not courses:
+        await update.message.reply_text(
+            "💎 <b>Pullik kurslar</b>\n\n"
+            "Hozircha kurslar qo'shilmagan. Tez orada qo'shiladi! 🔜",
+            parse_mode="HTML"
+        )
+        return
+
+    if len(courses) == 1:
+        await send_course(context, update.effective_chat.id, courses[0])
+        return
+
+    keyboard = [[InlineKeyboardButton(f"💎 {c['title']}", callback_data=f"course:{c['id']}")]
+                for c in courses]
+    await update.message.reply_text(
+        f"💎 <b>Pullik kurslar</b>\n\nJami {len(courses)} ta kurs. Birini tanlang:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def course_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    course = find_item(load_courses(), query.data.split(":", 1)[1])
+    if not course:
+        await query.answer("❌ Bu kurs o'chirilgan", show_alert=True)
+        return
+
+    await send_course(context, query.from_user.id, course)
+
+
+async def send_admin_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "💬 <b>Admin bilan aloqa</b>\n\nSavol va takliflar uchun murojaat qiling:"
+    keyboard = [[InlineKeyboardButton("✍️ Yozish", url=f"https://t.me/{ADMIN_USERNAME}")]]
+    await update.message.reply_text(
+        text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# ═══════════════════════════════════════════════════════
+# 🔧 ADMIN — KURS QO'SHISH VA O'CHIRISH
+# ═══════════════════════════════════════════════════════
+
+async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/admin — admin uchun mavjud buyruqlar ro'yxati"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text(
+        "🔧 <b>Admin buyruqlari</b>\n\n"
+        "📚 <b>Bepul kurslar</b>\n"
+        "/dars_qoshish — yangi mavzu + YouTube link qo'shish\n\n"
+        "💎 <b>Pullik kurslar</b>\n"
+        "/kurs_qoshish — yangi kurs (matn yoki rasm) qo'shish\n\n"
+        "📋 <b>Boshqarish</b>\n"
+        "/royxat — qo'shilganlarni ko'rish va o'chirish\n\n"
+        "👥 <b>Foydalanuvchilar</b>\n"
+        "/stats — obunachilar soni\n"
+        "/xabar — hammaga xabar yuborish\n"
+        "/export — ro'yxatni CSV qilib olish\n"
+        "/import — CSV'dan ro'yxatni tiklash\n\n"
+        "/cancel — boshlangan amalni bekor qilish",
+        parse_mode="HTML"
+    )
+
+
+async def add_lesson_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/dars_qoshish — bepul dars qo'shishni boshlaydi"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    context.user_data.clear()
+    context.user_data["action"] = "lesson_title"
+    await update.message.reply_text(
+        "📚 <b>Yangi bepul dars</b>\n\nMavzu nomini yozing:\n"
+        "<i>(bekor qilish uchun /cancel)</i>",
+        parse_mode="HTML"
+    )
+
+
+async def handle_lesson_title(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    context.user_data["lesson_title"] = text.strip()[:200]
+    context.user_data["action"] = "lesson_url"
+    await update.message.reply_text("▶️ Endi shu mavzuning YouTube havolasini yuboring:")
+
+
+async def handle_lesson_url(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    url = text.strip()
+    if not url.startswith(("http://", "https://")):
+        await update.message.reply_text(
+            "❌ Bu havolaga o'xshamaydi. To'liq havolani yuboring "
+            "(masalan: https://youtu.be/xxxxx):"
+        )
+        return
+
+    lessons = load_lessons()
+    lessons.append({
+        "id": new_id(),
+        "title": context.user_data["lesson_title"],
+        "url": url,
+        "added_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    save_json(LESSONS_FILE, lessons)
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        f"✅ <b>Dars qo'shildi!</b>\n\n"
+        f"📖 {lessons[-1]['title']}\n"
+        f"Jami bepul darslar: {len(lessons)} ta",
+        parse_mode="HTML",
+        reply_markup=get_main_menu_keyboard()
+    )
+
+
+async def add_course_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/kurs_qoshish — pullik kurs qo'shishni boshlaydi"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+    context.user_data.clear()
+    context.user_data["action"] = "course_title"
+    await update.message.reply_text(
+        "💎 <b>Yangi pullik kurs</b>\n\nKurs nomini yozing:\n"
+        "<i>(bekor qilish uchun /cancel)</i>",
+        parse_mode="HTML"
+    )
+
+
+async def handle_course_title(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    context.user_data["course_title"] = text.strip()[:200]
+    context.user_data["action"] = "course_info"
+    await update.message.reply_text(
+        "📝 Endi kurs haqidagi ma'lumotni yuboring:\n\n"
+        "• Oddiy matn yozing, <b>yoki</b>\n"
+        "• Rasm yuboring (izoh bilan birga bo'lsa ham bo'ladi)",
+        parse_mode="HTML"
+    )
+
+
+async def handle_course_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pullik kurs ma'lumoti — matn yoki rasm (izohi bilan)."""
+    message = update.message
+    photo_id = message.photo[-1].file_id if message.photo else None
+    text = (message.caption or message.text or "").strip()
+
+    if not photo_id and not text:
+        await message.reply_text("❌ Matn yoki rasm yuboring:")
+        return
+
+    courses = load_courses()
+    courses.append({
+        "id": new_id(),
+        "title": context.user_data["course_title"],
+        "text": text,
+        "photo": photo_id,
+        "added_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    save_json(COURSES_FILE, courses)
+    context.user_data.clear()
+
+    await message.reply_text(
+        f"✅ <b>Kurs qo'shildi!</b>\n\n"
+        f"💎 {courses[-1]['title']}\n"
+        f"Jami pullik kurslar: {len(courses)} ta",
+        parse_mode="HTML",
+        reply_markup=get_main_menu_keyboard()
+    )
+
+
+async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/royxat — qo'shilgan darslar va kurslarni o'chirish tugmalari bilan ko'rsatadi"""
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    lessons = load_lessons()
+    courses = load_courses()
+
+    if lessons:
+        keyboard = [[InlineKeyboardButton(f"❌ {l['title']}", callback_data=f"dellesson:{l['id']}")]
+                    for l in lessons]
+        await update.message.reply_text(
+            f"📚 <b>Bepul darslar ({len(lessons)} ta)</b>\n\n"
+            "O'chirish uchun ustiga bosing:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.message.reply_text("📚 Bepul darslar hali qo'shilmagan.")
+
+    if courses:
+        keyboard = [[InlineKeyboardButton(f"❌ {c['title']}", callback_data=f"delcourse:{c['id']}")]
+                    for c in courses]
+        await update.message.reply_text(
+            f"💎 <b>Pullik kurslar ({len(courses)} ta)</b>\n\n"
+            "O'chirish uchun ustiga bosing:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.message.reply_text("💎 Pullik kurslar hali qo'shilmagan.")
+
+
+async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dars yoki kursni o'chirish (faqat admin)"""
+    query = update.callback_query
+
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("⛔ Sizda ruxsat yo'q", show_alert=True)
+        return
+
+    kind, item_id = query.data.split(":", 1)
+    filepath = LESSONS_FILE if kind == "dellesson" else COURSES_FILE
+    items = load_json(filepath, [])
+
+    item = find_item(items, item_id)
+    if not item:
+        await query.answer("Allaqachon o'chirilgan", show_alert=True)
+        return
+
+    items = [i for i in items if i.get("id") != item_id]
+    save_json(filepath, items)
+
+    await query.answer(f"O'chirildi: {item['title']}")
+
+    # O'chirilgan qatorni tugmalar orasidan olib tashlaymiz
+    remaining = [row for row in query.message.reply_markup.inline_keyboard
+                 if not row[0].callback_data.endswith(item_id)]
+    if remaining:
+        await query.message.edit_reply_markup(InlineKeyboardMarkup(remaining))
+    else:
+        await query.message.edit_text("✅ Hammasi o'chirildi.")
+
+
+# ═══════════════════════════════════════════════════════
+# 👥 FOYDALANUVCHILAR BILAN ISHLASH (admin)
+# ═══════════════════════════════════════════════════════
+
 async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/xabar — barcha foydalanuvchilarga xabar yuborishni boshlash (faqat admin)"""
     if update.effective_user.id != ADMIN_ID:
@@ -253,13 +582,13 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
 
 
 async def export_registrations(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/export — marafon ro'yxatini CSV fayl qilib yuborish (faqat admin)"""
+    """/export — ro'yxatni CSV fayl qilib yuborish (faqat admin)"""
     if update.effective_user.id != ADMIN_ID:
         return
 
     registrations = load_json(REGISTRATIONS_FILE, {})
     if not registrations:
-        await update.message.reply_text("Hozircha marafonga ro'yxatdan o'tganlar yo'q.")
+        await update.message.reply_text("Hozircha ro'yxatdan o'tganlar yo'q.")
         return
 
     buf = io.StringIO()
@@ -316,7 +645,6 @@ async def handle_import_document(update: Update, context: ContextTypes.DEFAULT_T
                 "phone": row.get("Telefon", ""),
                 "region": row.get("Viloyat/tuman", ""),
                 "registered_at": row.get("Ro'yxatdan o'tgan sana", ""),
-                "sheet_synced": False,
             }
             users.setdefault(uid, {"username": None, "full_name": row.get("F.I.Sh", "")})
             count += 1
@@ -344,31 +672,11 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = load_json(USERS_FILE, {})
     registrations = load_json(REGISTRATIONS_FILE, {})
     total = len(set(users.keys()) | set(registrations.keys()))
-    await update.message.reply_text(f"👥 Botdagi jami obunachilar: <b>{total}</b> ta", parse_mode="HTML")
-
-
-# ═══════════════════════════════════════════════════════
-# 🏆 MENYU TUGMALARI
-# ═══════════════════════════════════════════════════════
-
-async def send_marathon_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "🏆 <b>Marafon kanaliga qo'shilish!</b>\n\n"
-        "Quyidagi havola orqali marafon kanaliga qo'shiling:\n\n"
-        f"🔗 {MARATHON_CHANNEL_LINK}"
-    )
-    await update.message.reply_text(text, parse_mode="HTML")
-
-
-async def send_mock_test_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔜 <b>Tez kunda ishga tushadi!</b>", parse_mode="HTML")
-
-
-async def send_admin_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = "💬 <b>Admin bilan aloqa</b>\n\nSavol va takliflar uchun murojaat qiling:"
-    keyboard = [[InlineKeyboardButton("✍️ Yozish", url=f"https://t.me/{ADMIN_USERNAME}")]]
     await update.message.reply_text(
-        text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+        f"👥 Botdagi jami obunachilar: <b>{total}</b> ta\n"
+        f"📚 Bepul darslar: <b>{len(load_lessons())}</b> ta\n"
+        f"💎 Pullik kurslar: <b>{len(load_courses())}</b> ta",
+        parse_mode="HTML"
     )
 
 
@@ -377,24 +685,43 @@ async def send_admin_contact(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ═══════════════════════════════════════════════════════
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    is_admin = update.effective_user.id == ADMIN_ID
     action = context.user_data.get("action")
-    if action == "broadcast" and update.effective_user.id == ADMIN_ID:
-        await handle_broadcast_message(update, context)
-        return
-    if action == "import" and update.effective_user.id == ADMIN_ID and update.message.document:
-        await handle_import_document(update, context)
+    text = update.message.text
+
+    # Menyu tugmasi bosilsa — boshlangan amal bekor qilinadi (tiqilib qolmaslik uchun)
+    if text in (BTN_FREE, BTN_PAID, BTN_ADMIN):
+        context.user_data.clear()
+        if text == BTN_FREE:
+            await send_free_lessons(update, context)
+        elif text == BTN_PAID:
+            await send_paid_courses(update, context)
+        else:
+            await send_admin_contact(update, context)
         return
 
-    text = update.message.text
+    # Admin boshlagan ko'p bosqichli amallar (matn, rasm yoki fayl bo'lishi mumkin)
+    if is_admin:
+        if action == "broadcast":
+            await handle_broadcast_message(update, context)
+            return
+        if action == "import" and update.message.document:
+            await handle_import_document(update, context)
+            return
+        if action == "course_info":
+            await handle_course_info(update, context)
+            return
+
     if text is None:
         return
 
-    if text == BTN_MARATHON:
-        await send_marathon_link(update, context)
-    elif text == BTN_MOCK_TEST:
-        await send_mock_test_info(update, context)
-    elif text == BTN_ADMIN:
-        await send_admin_contact(update, context)
+    if is_admin:
+        if action == "lesson_title":
+            await handle_lesson_title(update, context, text)
+        elif action == "lesson_url":
+            await handle_lesson_url(update, context, text)
+        elif action == "course_title":
+            await handle_course_title(update, context, text)
 
 
 # ═══════════════════════════════════════════════════════
@@ -408,11 +735,20 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(CommandHandler("admin", admin_help))
+    app.add_handler(CommandHandler("dars_qoshish", add_lesson_start))
+    app.add_handler(CommandHandler("kurs_qoshish", add_course_start))
+    app.add_handler(CommandHandler("royxat", admin_list))
     app.add_handler(CommandHandler("export", export_registrations))
     app.add_handler(CommandHandler("import", import_start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("xabar", broadcast_start))
+
     app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
+    app.add_handler(CallbackQueryHandler(lesson_callback, pattern="^lesson:"))
+    app.add_handler(CallbackQueryHandler(course_callback, pattern="^course:"))
+    app.add_handler(CallbackQueryHandler(delete_callback, pattern="^(dellesson|delcourse):"))
+
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.Document.ALL) & ~filters.COMMAND,
         handle_message
